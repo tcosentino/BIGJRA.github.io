@@ -9,10 +9,36 @@ class ShopGetter
     @itemHash = item_hash || load_item_hash(@game, @scriptsDir)
     @moveHash = move_hash || load_move_hash(@game, @scriptsDir)
     @priceLookup = load_price_lookup
+    @itemNameLookup = load_item_name_lookup
     @shopHash = load_shop_hash(@game, @scriptsDir)
   end
 
   def generate_shop_markdown(shop_title, shop_items)
+    render_shop_html(build_shop_data(shop_title, shop_items))
+  end
+
+  # Assembles a shop into a plain Hash (see render_shop_html). Items are given by
+  # display name; :item is the matching item symbol, or nil if there is none.
+  def build_shop_data(shop_title, shop_items)
+    items = shop_items.map do |thing|
+      if thing.is_a?(String)
+        item = thing
+        price = nil
+        bold_flag = false
+      else
+        item = thing[0]
+        price = thing[1]
+        bold_flag = thing[2]
+      end
+      price = price.nil? ? @priceLookup[item] : price
+      raise "Missing price for item #{item}" if price == ''
+      { item: @itemNameLookup[item], name: item, price: price, highlight: bold_flag ? true : false }
+    end
+    { type: 'shop', title: shop_title, items: items }
+  end
+
+  # Renders shop data from build_shop_data as the walkthrough's HTML table.
+  def render_shop_html(data)
     # Creates nokogiri HTML
     doc = Nokogiri::HTML::Document.new
     div = doc.create_element('div', class: 'shop_section')
@@ -32,21 +58,14 @@ class ShopGetter
     thead.add_child(table_header)
 
     bold = doc.create_element('strong')
-    bold.content = "Shop: #{shop_title}"
+    bold.content = "Shop: #{data[:title]}"
     table_header.add_child(bold)
     table_header['class'] = 'table-header'
     table_header['style'] = 'text-align: center;'
 
-    shop_items.each_with_index do |thing, _position|
-      if thing.is_a?(String)
-        item = thing
-        price = nil
-        bold_flag = false
-      else
-        item = thing[0]
-        price = thing[1]
-        bold_flag = thing[2]
-      end
+    data[:items].each do |entry|
+      item = entry[:name]
+      bold_flag = entry[:highlight]
       content_row = doc.create_element('tr')
       table.add_child(content_row)
 
@@ -60,11 +79,10 @@ class ShopGetter
       content_row.add_child(td_item)
 
       # Column 2: Price
-      price = price.nil? ? @priceLookup[item] : price
+      price = entry[:price]
       price = "$#{price}" if price.is_a?(Integer)
       td_price = doc.create_element('td', style: 'text-align: center')
       td_price.content = price
-      raise "Missing price for item #{item}" if price == '' 
       content_row.add_child(td_price)
     end
 
@@ -170,6 +188,15 @@ class ShopGetter
       prices[contents[:name].gsub("é", "e")] = contents[:price]
     end
     prices
+  end
+
+  # Maps item display names (as used in shop lists, accents stripped) to item symbols
+  def load_item_name_lookup
+    lookup = {}
+    @itemHash.each do |symbol, contents|
+      lookup[contents[:name].gsub("é", "e")] ||= symbol
+    end
+    lookup
   end
 
   def stock_display_name(stock)
