@@ -21,8 +21,14 @@ class TrainerGetter
   end
 
   def generate_trainer_markdown(trainer_id, field = nil, second_trainer_id = nil, type_mod = 0, name_ext = '')
-    
-    # a cursed workaround 
+    render_trainer_html(build_trainer_data(trainer_id, field, second_trainer_id, type_mod, name_ext))
+  end
+
+  # Assembles all data for a battle into a plain Hash (see render_trainer_html).
+  # Keys starting with an underscore are render-only and not exported to JSON.
+  def build_trainer_data(trainer_id, field = nil, second_trainer_id = nil, type_mod = 0, name_ext = '')
+
+    # a cursed workaround
     if trainer_id.class == Array 
       trainer_id[0] = trainer_id[0].gsub("okemon", "okémon") # workaround for the cursed e character I can't just type
     end
@@ -73,75 +79,41 @@ class TrainerGetter
       # pp trainer_data[:delayedactions]
     end
 
-    # Creates nokogiri HTML
-    doc = Nokogiri::HTML::Document.new
-    div = doc.create_element('div', class: 'trainer_section')
-    doc.add_child(div)
+    heading = if fight_is_boss
+                "VS Boss: #{trainer_name}"
+              elsif second_trainer_name
+                "VS: #{trainer_name} & #{second_trainer_name}"
+              elsif type_mod == 0
+                "VS: #{trainer_name}"
+              elsif type_mod == 1
+                "Partner: #{trainer_name}"
+              elsif type_mod == 2
+                "POV Trainer: #{name_ext != "" ? name_ext : trainer_name}"
+              end
 
-    table = doc.create_element('table')
-    div.add_child(table)
-
-    # Creates the header for the table
-    table_header = doc.create_element('thead')
-    table_header['class'] = 'table-header'
-    table.add_child(table_header)
-
-    # Header Row 1: Trainer Names, Field, Items
-    thead_row = doc.create_element('tr')
-    table_header.add_child(thead_row)
-
-    th = doc.create_element('th', colspan: 3, class: 'header-th')
-
-    # First TD for main content (VS, Field, Items)
-    td_main_content = doc.create_element('div')
-
-    bold = doc.create_element('strong')
-    bold.content =  if fight_is_boss
-                      "VS Boss: #{trainer_name}"
-                    elsif second_trainer_name
-                      "VS: #{trainer_name} & #{second_trainer_name}"
-                    elsif type_mod == 0
-                      "VS: #{trainer_name}"
-                    elsif type_mod == 1
-                      "Partner: #{trainer_name}"
-                    elsif type_mod == 2
-                      "POV Trainer: #{name_ext != "" ? name_ext : trainer_name}"
-                    end
-
-    td_main_content.add_child(bold)
-
-    if type_mod == 0 # we don't need field for partners or selves
-      field_div = doc.create_element('div')
-      field_div.content = "Field: #{field || 'No Field'}"
-      td_main_content.add_child(field_div)
+    if fight_is_boss
+      trainers = [{ name: trainer_name, trainerType: nil, title: nil, teamId: nil, boss: trainer_id }]
+    else
+      trainers = [trainer_id, second_trainer_id].compact.map do |tid|
+        { name: tid[0], trainerType: tid[1], title: @trainerTypeHash[tid[1]][:title], teamId: tid.dup }
+      end
     end
 
-    if type_mod == 0 && !item_symbols.empty? # Adds count of enemy trainer items
-      item_str = item_symbols.map { |sym, count| "#{@itemHash[sym][:name]}#{count > 1 ? " (#{count})" : ''}" }
-      items_div = doc.create_element('div')
-      items_div.content = "Items: #{item_str.join(', ')}"
-      td_main_content.add_child(items_div)
-    end
-
-    th.add_child(td_main_content)
-
-    # Second TD for [show] or [hide] text
-    td_show_hide = doc.create_element('div', class: 'show-hide-container') # style: 'text-align: right;')
-    show_hide_text = doc.create_element('span', class: 'show-hide-text', style: 'cursor: pointer;')
-    show_hide_text.content = '[show]'
-    td_show_hide.add_child(show_hide_text)
-
-    th.add_child(td_show_hide)
-
-    thead_row.add_child(th)
-
-    # Header Row 2: Actual table headers
-    thead_row = doc.create_element('tr')
-
-    ['Pokemon', 'Moves', 'Stat Info'].each do |col|
-      thead_row.add_child(doc.create_element('th', col, style: 'text-align: center;vertical-align : middle'))
-    end
-    table_header.add_child(thead_row)
+    data = {
+      type: 'battle',
+      heading: heading,
+      double: !second_trainer_id.nil?,
+      partner: type_mod == 1,
+      pov: type_mod == 2,
+      boss: fight_is_boss,
+      field: field ? FIELDS.key(field) : nil,
+      fieldName: field,
+      showField: type_mod == 0, # we don't need field for partners or selves
+      trainers: trainers,
+      items: item_symbols.map { |sym, count| { item: sym, count: count } },
+      party: [],
+      notes: nil
+    }
 
     # Trainer Mon data
     if fight_is_boss
@@ -151,9 +123,6 @@ class TrainerGetter
     end
 
     list_of_mons.each_with_index do |mon, idx|
-      content_row = doc.create_element('tr')
-      table.add_child(content_row)
-
       if mon[:boss] # Here we handle some overrides for boss mons in otherwise normal teams....
         boss_data = @bossHash[mon[:boss]]
         # Override whatever junk is in the trainer file, if its a boss
@@ -222,6 +191,35 @@ class TrainerGetter
 
       custom_form_bool = is_custom_form(form_key)
 
+      mon_data = {
+        species: mon[:species],
+        form: form,
+        formName: form > 0 ? @pokemonHash[mon[:species]].keys.find_all { |key| key.is_a?(String) }[mon[:form]] : nil,
+        displayName: pokemon_name,
+        nickname: mon[:name],
+        level: mon[:level],
+        gender: mon[:gender],
+        item: mon[:item],
+        ability: mon[:ability],
+        abilities: mon[:ability] ? nil : (form_data[:Abilities] ? form_data[:Abilities] : form_1_data[:Abilities]),
+        nature: mon[:nature] || :HARDY,
+        ivs: resolve_ivs(mon[:iv]),
+        evs: resolve_evs(mon[:ev], mon[:level]),
+        moves: nil,
+        hiddenPowerType: mon[:hptype],
+        shiny: mon[:shiny] ? true : false,
+        shadow: mon[:shadow] ? true : false,
+        ace: mon[:ace] ? true : false,
+        boss: mon[:boss] ? true : false,
+        sos: mon[:sos] ? true : false,
+        owner: (fight_is_boss || idx < trainer_data[:mons].length) ? 0 : 1,
+        customForm: custom_form_bool,
+        notes: nil,
+        shieldBreaks: nil,
+        _iv: mon[:iv],
+        _ev: mon[:ev]
+      }
+
       if custom_form_bool # Add typing only for custom formes
         type1 = form_data[:Type1] ? @typeHash[form_data[:Type1]][:name] : @typeHash[form_1_data[:Type1]][:name]
         type2 = form_data[:Type2] ? @typeHash[form_data[:Type2]][:name] : (form_1_data[:Type2] ? @typeHash[form_1_data[:Type2]][:name] : nil)
@@ -231,7 +229,10 @@ class TrainerGetter
           typeStr = "Typing: #{type1}/#{type2}"
         end
         mon_details_parts.push(typeStr)
+        mon_data[:types] = [form_data[:Type1] || form_1_data[:Type1], form_data[:Type2] || form_1_data[:Type2]].compact.uniq
+        mon_data[:baseStats] = base_stats
       end
+      base_details_count = mon_details_parts.length
 
       # Handles display of SOS Mons for full-boss fights
       if mon[:sos]
@@ -554,10 +555,7 @@ class TrainerGetter
         end
       end
 
-      mon_details_td = doc.create_element('td')
-      mon_details_td.add_child(doc.create_element('strong', pokemon_name))
-      mon_details_td.add_child(mon_details_parts.reject { |s| s.empty? }.join("\n"))
-      content_row.add_child(mon_details_td)
+      mon_data[:notes] = mon_details_parts[base_details_count..]
 
       # Create list of default moves
       unless mon[:moves]
@@ -587,48 +585,23 @@ class TrainerGetter
         mon[:moves].push(boss_data[:chargeAttack])
       end
 
-      moves_edited = []
-      mon[:moves].each do |move|
-        next if move == nil
-        if move.class == Hash 
+      mon_data[:moves] = mon[:moves].compact.map do |move|
+        if move.class == Hash
           if move[:turns] # is a charge attack
-            name = "Charge Attack (#{move[:turns]} turns)"
+            { chargeAttack: true, turns: move[:turns] }
           else # is an intermediate attack
-            name = "#{move[:name]} (Intermediate attack)"
+            { intermediateAttack: true, name: move[:name] }
           end
         else
-          name = @moveHash[move][:name]
+          move
         end
-        name = name + hp_str(name, mon[:hptype])
-        moves_edited.push(name)
       end
-      final = "- " + moves_edited.join("\n- ")
-      content_row.add_child(doc.create_element('td', final))
-
-      # Handles stats next: base stats if applicable, IVs, Nature, EVs
-      stat_details_parts = []
-      if custom_form_bool # Only add base stats when custom form
-        base_stats_str = 'Base Stats: ' + base_stats.zip(EV_ARRAY).map { |stat, position| "#{stat} #{position}" }.join(', ')
-        stat_details_parts.push(base_stats_str) 
-      end
-      stat_details_parts.push(mon[:nature] ? "#{mon[:nature].capitalize} Nature" : 'Hardy Nature',)
-
-      stat_details_parts.push(get_ev_str(mon[:ev], mon[:level]))
-      stat_details_parts.push(get_iv_str(mon[:iv]))
-      stat_details_td = doc.create_element('td', stat_details_parts.join("\n"))
-      content_row.add_child(stat_details_td)
 
       # Adds Shield Break Details to the end
-      if shield_break_details != []
-        shield_break_row = doc.create_element('tr')
-        table.add_child(shield_break_row)
+      mon_data[:shieldBreaks] = shield_break_details
+      shield_break_details = []
 
-        shield_break_td = doc.create_element('td', colspan: 3)
-        shield_break_td.add_child(shield_break_details.reject { |s| s.empty? }.join("\n"))
-        shield_break_row.add_child(shield_break_td)
-
-        shield_break_details = []
-      end
+      data[:party].push(mon_data)
     end
 
     # TrainerEffects that are not party based
@@ -702,14 +675,166 @@ class TrainerGetter
         end
       end
 
+      data[:notes] = teff_details
+    end 
+
+    data
+  end
+
+  # Renders battle data from build_trainer_data as the walkthrough's HTML table.
+  def render_trainer_html(data)
+    # Creates nokogiri HTML
+    doc = Nokogiri::HTML::Document.new
+    div = doc.create_element('div', class: 'trainer_section')
+    doc.add_child(div)
+
+    table = doc.create_element('table')
+    div.add_child(table)
+
+    # Creates the header for the table
+    table_header = doc.create_element('thead')
+    table_header['class'] = 'table-header'
+    table.add_child(table_header)
+
+    # Header Row 1: Trainer Names, Field, Items
+    thead_row = doc.create_element('tr')
+    table_header.add_child(thead_row)
+
+    th = doc.create_element('th', colspan: 3, class: 'header-th')
+
+    # First TD for main content (VS, Field, Items)
+    td_main_content = doc.create_element('div')
+
+    bold = doc.create_element('strong')
+    bold.content = data[:heading]
+
+    td_main_content.add_child(bold)
+
+    if data[:showField]
+      field_div = doc.create_element('div')
+      field_div.content = "Field: #{data[:fieldName] || 'No Field'}"
+      td_main_content.add_child(field_div)
+    end
+
+    if data[:showField] && !data[:items].empty? # Adds count of enemy trainer items
+      item_str = data[:items].map { |i| "#{@itemHash[i[:item]][:name]}#{i[:count] > 1 ? " (#{i[:count]})" : ''}" }
+      items_div = doc.create_element('div')
+      items_div.content = "Items: #{item_str.join(', ')}"
+      td_main_content.add_child(items_div)
+    end
+
+    th.add_child(td_main_content)
+
+    # Second TD for [show] or [hide] text
+    td_show_hide = doc.create_element('div', class: 'show-hide-container') # style: 'text-align: right;')
+    show_hide_text = doc.create_element('span', class: 'show-hide-text', style: 'cursor: pointer;')
+    show_hide_text.content = '[show]'
+    td_show_hide.add_child(show_hide_text)
+
+    th.add_child(td_show_hide)
+
+    thead_row.add_child(th)
+
+    # Header Row 2: Actual table headers
+    thead_row = doc.create_element('tr')
+
+    ['Pokemon', 'Moves', 'Stat Info'].each do |col|
+      thead_row.add_child(doc.create_element('th', col, style: 'text-align: center;vertical-align : middle'))
+    end
+    table_header.add_child(thead_row)
+
+    data[:party].each do |mon|
+      content_row = doc.create_element('tr')
+      table.add_child(content_row)
+
+      if mon[:ability]
+        abText = @abilityHash[mon[:ability]][:name]
+      else
+        abText = mon[:abilities].map {|a| @abilityHash[a][:name]}.join("/")
+      end
+
+      mon_details_parts = [
+        "#{mon[:gender] ? " (#{mon[:gender]})" : ''}, Lv. #{mon[:level]}",
+        "#{mon[:formName]}",
+        "#{mon[:item] ? "@#{@itemHash[mon[:item]][:name]}" : ''}",
+        "Ability: #{abText}"
+      ]
+      if mon[:customForm]
+        type_names = mon[:types].map { |type| @typeHash[type][:name] }.uniq
+        mon_details_parts.push("Typing: #{type_names.join('/')}")
+      end
+      mon_details_parts += mon[:notes]
+
+      mon_details_td = doc.create_element('td')
+      mon_details_td.add_child(doc.create_element('strong', mon[:displayName]))
+      mon_details_td.add_child(mon_details_parts.reject { |s| s.empty? }.join("\n"))
+      content_row.add_child(mon_details_td)
+
+      moves_edited = []
+      mon[:moves].each do |move|
+        if move.class == Hash
+          if move[:chargeAttack]
+            name = "Charge Attack (#{move[:turns]} turns)"
+          else
+            name = "#{move[:name]} (Intermediate attack)"
+          end
+        else
+          name = @moveHash[move][:name]
+        end
+        name = name + hp_str(name, mon[:hiddenPowerType])
+        moves_edited.push(name)
+      end
+      final = "- " + moves_edited.join("\n- ")
+      content_row.add_child(doc.create_element('td', final))
+
+      # Handles stats next: base stats if applicable, IVs, Nature, EVs
+      stat_details_parts = []
+      if mon[:customForm] # Only add base stats when custom form
+        base_stats_str = 'Base Stats: ' + mon[:baseStats].zip(EV_ARRAY).map { |stat, position| "#{stat} #{position}" }.join(', ')
+        stat_details_parts.push(base_stats_str)
+      end
+      stat_details_parts.push("#{mon[:nature].capitalize} Nature")
+
+      stat_details_parts.push(get_ev_str(mon[:_ev], mon[:level]))
+      stat_details_parts.push(get_iv_str(mon[:_iv]))
+      stat_details_td = doc.create_element('td', stat_details_parts.join("\n"))
+      content_row.add_child(stat_details_td)
+
+      # Adds Shield Break Details to the end
+      if mon[:shieldBreaks] != []
+        shield_break_row = doc.create_element('tr')
+        table.add_child(shield_break_row)
+
+        shield_break_td = doc.create_element('td', colspan: 3)
+        shield_break_td.add_child(mon[:shieldBreaks].reject { |s| s.empty? }.join("\n"))
+        shield_break_row.add_child(shield_break_td)
+      end
+    end
+
+    # TrainerEffects that are not party based
+    if data[:notes]
       teff_row = doc.create_element('tr')
       table.add_child(teff_row)
       teff_td = doc.create_element('td', colspan: 3)
-      teff_td.add_child(teff_details.reject { |s| s.empty? }.join("\n-> "))
+      teff_td.add_child(data[:notes].reject { |s| s.empty? }.join("\n-> "))
       teff_row.add_child(teff_td)
-    end 
+    end
 
     doc.to_html.gsub(/<td>\s*\n\s*<strong>/, '<td><strong>').split("\n")[1..].join("\n")
+  end
+
+  # Normalizes trainer IVs to a 6-element array (HP, Atk, Def, SpA, SpD, Spe)
+  def resolve_ivs(ivs)
+    return [10] * 6 if !ivs
+    return [31, 31, 31, 31, 31, 0] if ivs == 32
+    return [ivs] * 6 if ivs.class == Integer
+    ivs
+  end
+
+  # Normalizes trainer EVs to a 6-element array, defaulting by level like get_ev_str
+  def resolve_evs(evs, level = 0)
+    return [[85, level * 3 / 2].min] * 6 if !evs
+    evs
   end
 
   def report_missing_trainers
