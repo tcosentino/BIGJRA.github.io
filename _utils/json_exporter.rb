@@ -117,6 +117,7 @@ class JsonExporter
 
     write_json(File.join(json_dir, 'dex.json'), build_dex)
     write_json(File.join(json_dir, 'pokedex.json'), build_pokedex)
+    write_json(File.join(json_dir, 'learnsets.json'), build_learnsets)
   end
 
   # Removes render-only keys (leading underscore) and converts values for JSON
@@ -224,7 +225,7 @@ class JsonExporter
 
     fw = @funcWrapper
     abilities = {}
-    items = {}
+    names = {}
     species.each_value do |entry|
       entry[:forms].each_value do |form|
         (form[:abilities] + [form[:hiddenAbility]]).compact.each do |ab|
@@ -233,11 +234,48 @@ class JsonExporter
         end
         form[:evolutions].each do |evo|
           param = evo[:parameter]
-          items[param] ||= fw.itemHash[param][:name] if param.is_a?(Symbol) && fw.itemHash[param]
+          next unless param.is_a?(Symbol)
+          source = fw.itemHash[param] || fw.moveHash[param] || fw.pokemonHash[param]&.values&.find { |v| v.is_a?(Hash) && v[:name] }
+          names[param] ||= source[:name] if source
         end
       end
     end
-    export_value({ species: species, abilities: abilities, items: items })
+    export_value({ species: species, abilities: abilities, names: names })
+  end
+
+  # Per-form learnsets (no pre-evolution merging) plus full data for every move they reference
+  def build_learnsets
+    fw = @funcWrapper
+    species = {}
+    move_syms = Set.new
+    fw.pokemonHash.each do |sym, form_hash|
+      form_keys = form_hash.keys.select { |key| key.is_a?(String) }
+      next if form_keys.empty?
+      first = form_hash[form_keys[0]]
+      first = form_hash[first[:baseForm]].merge(first.compact) if first[:baseForm] && form_hash[first[:baseForm]]
+      forms = {}
+      form_keys.each_with_index do |form_key, idx|
+        data = idx == 0 ? first : form_hash[form_key]
+        level = (data[:Moveset] || first[:Moveset] || []).map { |lvl, move| [lvl, move] }
+        machine = data[:compatiblemoves] || first[:compatiblemoves] || []
+        egg = data[:EggMoves] || first[:EggMoves] || []
+        relearn = data[:RelearnerMoves] || first[:RelearnerMoves] || []
+        level.each { |_, move| move_syms.add(move) }
+        [machine, egg, relearn].each { |list| list.each { |move| move_syms.add(move) } }
+        forms[idx.to_s] = { level: level, machine: machine, egg: egg, relearn: relearn }
+      end
+      species[sym] = forms
+    end
+
+    moves = {}
+    move_syms.to_a.sort.each do |sym|
+      m = fw.moveHash[sym]
+      next unless m
+      moves[sym] = { name: m[:name], type: m[:type], category: m[:category], power: m[:basedamage],
+                     accuracy: m[:accuracy], pp: m[:maxpp], desc: m[:desc] }
+      moves[sym][:longName] = m[:longname] if m[:longname]
+    end
+    export_value({ species: species, moves: moves })
   end
 
   private

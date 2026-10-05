@@ -150,7 +150,8 @@ class JsonExportTest < Minitest::Test
   def test_pokedex_covers_all_species_with_evolutions_and_locations
     data = GeneratedOutput.json('pokedex.json')
     pokedex = data['species']
-    assert_equal 'Water Stone', data['items']['WATERSTONE']
+    assert_equal 'Water Stone', data['names']['WATERSTONE']
+    assert_equal 'Rollout', data['names']['ROLLOUT']
     assert_equal 'Overgrow', data['abilities']['OVERGROW']['name']
     assert_operator pokedex.length, :>=, 800
     bulba = pokedex['BULBASAUR']
@@ -169,5 +170,21 @@ class JsonExportTest < Minitest::Test
     encountered.each { |sym| refute_empty pokedex[sym]['locations'], "locations for #{sym}" }
     section_ids = index['chapters'].flat_map { |ch| [ch['id']] + ch['sections'].map { |s| s['id'] } }
     pokedex.each_value { |s| s['locations'].each { |l| assert_includes section_ids, l['sectionId'] } }
+  end
+
+  def test_learnsets_cover_all_species_with_move_data
+    data = GeneratedOutput.json('learnsets.json')
+    pokedex = GeneratedOutput.json('pokedex.json')['species']
+    pokedex.each_key { |sym| assert data['species'][sym]&.key?('0'), "learnset for #{sym}" }
+    bulba = data['species']['BULBASAUR']['0']
+    assert_includes bulba['level'], [7, 'LEECHSEED']
+    assert_includes bulba['machine'], 'SLUDGEBOMB'
+    referenced = data['species'].values.flat_map do |forms|
+      forms.values.flat_map { |f| f['level'].map(&:last) + f['machine'] + f['egg'] + f['relearn'] }
+    end.uniq
+    referenced.each do |move|
+      assert data['moves'].key?(move), "move #{move}"
+      assert_kind_of String, data['moves'][move]['type']
+    end
   end
 end
