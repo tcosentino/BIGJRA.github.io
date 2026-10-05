@@ -19,7 +19,8 @@ module GeneratedOutput
     @dir ||= begin
       dir = Dir.mktmpdir('wt-test')
       Minitest.after_run { FileUtils.rm_rf(dir) }
-      cmd = ['ruby', 'wt_generator.rb', 'reborn', TestPaths::GAME_SCRIPTS, File.join(dir, 'reborn.md')]
+      cmd = ['ruby', 'wt_generator.rb', 'reborn', TestPaths::GAME_SCRIPTS, File.join(dir, 'reborn.md'),
+             '--json', File.join(dir, 'json')]
       out, status = Open3.capture2e(*cmd, chdir: TestPaths::REPO_DIR)
       raise "Generator failed:\n#{out}" unless status.success?
       dir
@@ -28,6 +29,6 @@ module GeneratedOutput
 
   def self.json(path)
     @json ||= {}
-    @json[path] ||= JSON.parse(File.read(File.join(dir, 'json', path)))
+    @json[path] ||= JSON.parse(File.read(File.join(dir, 'json', path), encoding: 'UTF-8'))
   end
 end

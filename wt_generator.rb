@@ -1,13 +1,22 @@
 # The Markdown to be processed by Jekyll is not committed directly - instead, it is processed
 # by this script to ensure game data is being pulled effectively.
 # Run with arguments <game>, <scripts directory>, <outputfile path>, to generate markdown appropriately.
+# Add --json <directory> to also export the walkthrough as structured JSON.
 
 require 'fileutils'
 require_relative '_utils/md_generator'
+require_relative '_utils/json_exporter'
+
+# Optional --json <directory> flag
+json_dir = nil
+if (json_flag = ARGV.index('--json'))
+  json_dir = ARGV[json_flag + 1]
+  ARGV.slice!(json_flag, 2)
+end
 
 # Check for correct number of arguments
-if ARGV.length != 3
-  puts "Usage: ruby wt_generator.rb <game> <scripts directory> <output file>"
+if ARGV.length != 3 || (json_flag && json_dir.nil?)
+  puts "Usage: ruby wt_generator.rb <game> <scripts directory> <output file> [--json <json directory>]"
   exit 1
 end
 
@@ -23,7 +32,8 @@ unless ['reborn', 'rejuv', 'deso'].include?(game)
 end
 
 # Generate markdown content based on the game type
-result = generate_md_text(game, scripts_dir)
+json_exporter = json_dir ? JsonExporter.new(game) : nil
+result = generate_md_text(game, scripts_dir, json_exporter: json_exporter)
 markdown_contents = result[:monolithic]
 chapters = result[:chapters]
 puts "Generated markdown contents for #{game}!"
@@ -93,4 +103,15 @@ begin
 rescue => e
   STDERR.puts "Error writing paginated chapter files: #{e.message}"
   exit 1
+end
+
+# Write structured JSON export
+if json_exporter
+  begin
+    json_exporter.write(json_dir)
+    puts "Wrote JSON export (#{json_exporter.chapters.length} chapters) to #{json_dir}"
+  rescue => e
+    STDERR.puts "Error writing JSON export: #{e.message}"
+    exit 1
+  end
 end

@@ -1,8 +1,11 @@
 require_relative 'common'
 require_relative 'function_wrapper'
 
-def generate_md_text(game = 'reborn', scripts_dir)
+# Pass json_exporter (a JsonExporter) to also collect the structured data
+# behind each chapter while the markdown is generated.
+def generate_md_text(game = 'reborn', scripts_dir, json_exporter: nil)
   func_wrapper = FunctionWrapper.new(game, scripts_dir)
+  json_exporter.attach(func_wrapper) if json_exporter
 
   def generate_md_pre_contents(game = 'reborn')
     <<~PRE_CONTENTS
@@ -43,7 +46,7 @@ def generate_md_text(game = 'reborn', scripts_dir)
     ''
   end
 
-  def generate_chapter_contents(game, scripts_dir, type, num, func_wrapper)
+  def generate_chapter_contents(game, scripts_dir, type, num, func_wrapper, items = nil)
     raw_md = load_chapter_md(game, type, num)
     return nil if !raw_md
 
@@ -52,12 +55,14 @@ def generate_md_text(game = 'reborn', scripts_dir)
     raw_md.each_line do |line|
       if line.strip.empty? || line[0] != '!'
         res << line
+        items << [:text, line] if items
       elsif line[0] == '!'
         # Function Wrapper class does the magic of taking a line
         # beginning with ! and transforming it into a dynamic output:
         # taking a shortened function name, arguments, and globals
-        function_result = func_wrapper.evaluate_function_from_string(line)
-        res << function_result
+        function_result = func_wrapper.evaluate_blocks_from_string(line)
+        res << function_result[:html]
+        items << [:blocks, function_result[:blocks]] if items
       end
     end
     res.join
@@ -111,7 +116,8 @@ def generate_md_text(game = 'reborn', scripts_dir)
   ['main', 'para', 'rene', 'post', 'appendices'].each do |chapter_type|
     chapter_num = 1
     loop do
-      curr = generate_chapter_contents(game, scripts_dir, chapter_type, chapter_num, func_wrapper)
+      items = json_exporter ? [] : nil
+      curr = generate_chapter_contents(game, scripts_dir, chapter_type, chapter_num, func_wrapper, items)
       break if !curr
       
       first_header = extract_first_level_header(curr)
@@ -119,6 +125,7 @@ def generate_md_text(game = 'reborn', scripts_dir)
         slug = generate_intelligent_slug(first_header, chapter_type, chapter_num)
         chapters << { title: first_header, slug: slug, content: curr }
       end
+      json_exporter.add_chapter(first_header ? slug : nil, items) if json_exporter
       
       res += "#{curr}\n"
       chapter_num += 1
