@@ -116,6 +116,7 @@ class JsonExporter
     end
 
     write_json(File.join(json_dir, 'dex.json'), build_dex)
+    write_json(File.join(json_dir, 'pokedex.json'), build_pokedex)
   end
 
   # Removes render-only keys (leading underscore) and converts values for JSON
@@ -188,7 +189,68 @@ class JsonExporter
     export_value({ species: species, moves: moves, abilities: abilities, items: items, types: types, fields: fields })
   end
 
+  # Every species in the game, with evolutions and where the guide lists it as obtainable.
+  # Species symbols referenced here (evolution targets) are keys of the same `species` map.
+  def build_pokedex
+    locations = Hash.new { |h, k| h[k] = [] }
+    @chapters.each do |ch|
+      ch[:sections].each do |sec|
+        sec_id = sec[:id] || ch[:id]
+        sec_title = sec[:title] || 'Introduction'
+        sec[:blocks].each do |block|
+          if block[:type] == 'encounters'
+            block[:methods].each do |m|
+              m[:rows].each do |row|
+                add_location(locations[row[:species]], ch, sec_id, sec_title, block[:mapName] || block[:name],
+                             m[:method], row[:levels])
+              end
+            end
+          elsif block[:type] == 'shop'
+            block[:items].each do |i|
+              add_location(locations[i[:species]], ch, sec_id, sec_title, block[:title], 'Shop', nil) if i[:species]
+            end
+          end
+        end
+      end
+    end
+
+    species = {}
+    @funcWrapper.pokemonHash.each_key do |sym|
+      entry = species_entry(sym, full: true)
+      next unless entry
+      entry[:locations] = locations[sym]
+      species[sym] = entry
+    end
+
+    fw = @funcWrapper
+    abilities = {}
+    items = {}
+    species.each_value do |entry|
+      entry[:forms].each_value do |form|
+        (form[:abilities] + [form[:hiddenAbility]]).compact.each do |ab|
+          a = fw.abilityHash[ab]
+          abilities[ab] ||= { name: a[:name], desc: a[:fullDesc] || a[:desc] } if a
+        end
+        form[:evolutions].each do |evo|
+          param = evo[:parameter]
+          items[param] ||= fw.itemHash[param][:name] if param.is_a?(Symbol) && fw.itemHash[param]
+        end
+      end
+    end
+    export_value({ species: species, abilities: abilities, items: items })
+  end
+
   private
+
+  def add_location(list, chapter, sec_id, sec_title, place, method, levels)
+    loc = list.find { |l| l[:sectionId] == sec_id && l[:place] == place }
+    unless loc
+      loc = { chapterId: chapter[:id], sectionId: sec_id, sectionTitle: sec_title, place: place, methods: [], levels: [] }
+      list.push(loc)
+    end
+    loc[:methods].push(method) unless loc[:methods].include?(method)
+    loc[:levels].push(levels) if levels && !loc[:levels].include?(levels)
+  end
 
   def each_block(&blk)
     @chapters.each do |ch|
@@ -231,7 +293,7 @@ class JsonExporter
   end
 
   # All forms of a species, keyed by form index; missing fields fall back to the first form
-  def species_entry(sym)
+  def species_entry(sym, full: false)
     form_hash = @funcWrapper.pokemonHash[sym]
     return nil unless form_hash
     form_keys = form_hash.keys.select { |key| key.is_a?(String) }
@@ -251,8 +313,16 @@ class JsonExporter
         abilities: data[:Abilities] || first[:Abilities] || [],
         hiddenAbility: data[:HiddenAbility] || first[:HiddenAbility]
       }
+      if full
+        evolutions = data[:evolutions] || first[:evolutions] || []
+        forms[idx.to_s][:evolutions] = evolutions.map do |evo|
+          { species: evo[:species], method: evo[:method], parameter: evo[:parameter] }
+        end
+      end
     end
-    { name: first[:name], forms: forms }
+    entry = { name: first[:name], forms: forms }
+    entry.merge!(num: first[:dexnum], catchRate: first[:CatchRate], kind: first[:kind]) if full
+    entry
   end
 
   def write_json(path, data)

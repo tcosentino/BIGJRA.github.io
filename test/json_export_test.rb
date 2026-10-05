@@ -146,4 +146,28 @@ class JsonExportTest < Minitest::Test
     row = block['methods'][0]['rows'][0]
     %w[species form minLevel maxLevel rate].each { |key| assert row.key?(key), key }
   end
+
+  def test_pokedex_covers_all_species_with_evolutions_and_locations
+    data = GeneratedOutput.json('pokedex.json')
+    pokedex = data['species']
+    assert_equal 'Water Stone', data['items']['WATERSTONE']
+    assert_equal 'Overgrow', data['abilities']['OVERGROW']['name']
+    assert_operator pokedex.length, :>=, 800
+    bulba = pokedex['BULBASAUR']
+    assert_equal 1, bulba['num']
+    assert_equal [{ 'species' => 'IVYSAUR', 'method' => 'Level', 'parameter' => 16 }], bulba['forms']['0']['evolutions']
+    pokedex.each_value do |s|
+      s['forms'].each_value do |f|
+        f['abilities'].each { |ab| assert data['abilities'].key?(ab), "ability #{ab}" }
+        f['evolutions'].each { |e| assert pokedex.key?(e['species']), "evolution target #{e['species']}" }
+      end
+    end
+
+    # Every encountered species carries the section it appears in
+    encountered = all_blocks.select { |b| b['type'] == 'encounters' }
+                            .flat_map { |b| b['methods'].flat_map { |m| m['rows'].map { |r| r['species'] } } }.uniq
+    encountered.each { |sym| refute_empty pokedex[sym]['locations'], "locations for #{sym}" }
+    section_ids = index['chapters'].flat_map { |ch| [ch['id']] + ch['sections'].map { |s| s['id'] } }
+    pokedex.each_value { |s| s['locations'].each { |l| assert_includes section_ids, l['sectionId'] } }
+  end
 end
