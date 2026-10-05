@@ -71,10 +71,6 @@ class EncounterGetter
 
       found_group = true
 
-      # I group Land M/D/N together, and also fishing rods. This num_cols thus keeps the number of columns
-      # in the ultimate table together.
-      num_cols = types.length + 2
-
       # Creates a hash where mons will note every possible level, and rates per encounter type
       mons = Hash.new { |hash, key| hash[key] = { 'levels' => Set.new }.merge(types.map { |type| [type, 0] }.to_h) }
       # Per encounter table levels, for the structured data
@@ -216,6 +212,9 @@ class EncounterGetter
     result[:_groups].each do |group_data|
       group = group_data[:group]
       types = group_data[:types]
+
+      # I group Land M/D/N together, and also fishing rods. This num_cols thus keeps the number of columns
+      # in the ultimate table together.
       num_cols = types.length + 2
 
       table = doc.create_element('table')

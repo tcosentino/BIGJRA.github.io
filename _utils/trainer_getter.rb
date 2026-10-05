@@ -106,7 +106,7 @@ class TrainerGetter
       partner: type_mod == 1,
       pov: type_mod == 2,
       boss: fight_is_boss,
-      field: field ? FIELDS.key(field) : nil,
+      field: field_symbol(field),
       fieldName: field,
       showField: type_mod == 0, # we don't need field for partners or selves
       trainers: trainers,
@@ -821,6 +821,13 @@ class TrainerGetter
     end
 
     doc.to_html.gsub(/<td>\s*\n\s*<strong>/, '<td><strong>').split("\n")[1..].join("\n")
+  end
+
+  # Best-effort FIELDS symbol for a field display name ("Cave Field" => :CAVE); nil for
+  # free-form descriptions like "Rainbow Field atop Rocky Field"
+  def field_symbol(field_name)
+    return nil unless field_name
+    FIELDS.key(field_name) || FIELDS.key(field_name.sub(/ Field\z/, '')) || FIELDS.key("#{field_name} Field")
   end
 
   # Normalizes trainer IVs to a 6-element array (HP, Atk, Def, SpA, SpD, Spe)

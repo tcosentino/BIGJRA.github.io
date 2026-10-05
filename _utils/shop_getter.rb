@@ -3,11 +3,12 @@ require_relative 'common'
 class ShopGetter
   attr_reader :game, :item_hash, :move_hash
 
-  def initialize(game, scripts_dir, item_hash = nil, move_hash = nil)
+  def initialize(game, scripts_dir, item_hash = nil, move_hash = nil, pokemon_hash = nil)
     @game = game
     @scriptsDir = scripts_dir
     @itemHash = item_hash || load_item_hash(@game, @scriptsDir)
     @moveHash = move_hash || load_move_hash(@game, @scriptsDir)
+    @pokemonHash = pokemon_hash
     @priceLookup = load_price_lookup
     @itemNameLookup = load_item_name_lookup
     @shopHash = load_shop_hash(@game, @scriptsDir)
@@ -32,9 +33,31 @@ class ShopGetter
       end
       price = price.nil? ? @priceLookup[item] : price
       raise "Missing price for item #{item}" if price == ''
-      { item: @itemNameLookup[item], name: item, price: price, highlight: bold_flag ? true : false }
+      { name: item, price: price, highlight: bold_flag ? true : false }.merge(resolve_shop_entry(item))
     end
     { type: 'shop', title: shop_title, items: items }
+  end
+
+  # Best-effort mapping of a shop entry's display name to game data:
+  # "Potion", "TM64 Explosion", "5x EV Tuners", "2 Heart Scales", or a Pokemon name.
+  def resolve_shop_entry(name)
+    quantity = 1
+    base = name
+    if (match = name.match(/\A(\d+)x? (.+)\z/))
+      quantity = match[1].to_i
+      base = match[2]
+    end
+    candidates = [base, base.sub(/s\z/, ''), base.sub(/es\z/, ''), base.sub(/ies\z/, 'y')]
+    candidates.push(base.split(' ')[0]) if base.match?(/\A(TM|HM|TR)\d+ /)
+    item = candidates.map { |candidate| @itemNameLookup[candidate] }.compact.first
+    species = nil
+    unless item
+      @speciesNameLookup ||= load_species_name_lookup
+      species = @speciesNameLookup[base]
+    end
+    entry = { item: item, quantity: quantity }
+    entry[:species] = species if species
+    entry
   end
 
   # Renders shop data from build_shop_data as the walkthrough's HTML table.
@@ -200,6 +223,20 @@ class ShopGetter
     @itemHash.each do |symbol, contents|
       lookup[contents[:name].gsub("é", "e")] ||= symbol
     end
+    lookup
+  end
+
+  # Maps Pokemon display names (accents stripped) to species symbols
+  def load_species_name_lookup
+    lookup = {}
+    @pokemonHash ||= load_pokemon_hash(@game, @scriptsDir)
+    @pokemonHash.each do |symbol, forms|
+      first = forms.find { |key, _| key.is_a?(String) }
+      next unless first
+      lookup[first[1][:name].gsub("é", "e")] ||= symbol
+    end
+    lookup['Nidoran M'] ||= :NIDORANmA if @pokemonHash[:NIDORANmA]
+    lookup['Nidoran F'] ||= :NIDORANfE if @pokemonHash[:NIDORANfE]
     lookup
   end
 

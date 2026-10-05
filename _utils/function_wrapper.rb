@@ -30,7 +30,7 @@ class FunctionWrapper
     @encMapWrapper = EncounterMapWrapper.new(game, @scriptsDir)
 
     @encGetter = EncounterGetter.new(game, @scriptsDir, @encHash, @mapHash, @encMapWrapper, @pokemonHash)
-    @shopGetter = ShopGetter.new(game, @scriptsDir, @itemHash, @moveHash)
+    @shopGetter = ShopGetter.new(game, @scriptsDir, @itemHash, @moveHash, @pokemonHash)
     @trainerGetter = TrainerGetter.new(game, @scriptsDir, @trainerHash, @bossHash, @trainerTypeHash, @itemHash, @moveHash, @abilityHash,
                                        @pokemonHash, @typeHash)
 
@@ -493,7 +493,10 @@ class FunctionWrapper
   end
 
   def build_tutor_block(tutor_title, moves)
-    @moveNameLookup ||= @moveHash.each_with_object({}) { |(sym, data), lookup| lookup[data[:name]] ||= sym }
+    @moveNameLookup ||= @moveHash.each_with_object({}) do |(sym, data), lookup|
+      lookup[data[:name]] ||= sym
+      lookup[data[:longname]] ||= sym if data[:longname]
+    end
     moves = moves.map { |move, price| { move: @moveNameLookup[move], name: move, price: price } }
     { type: 'tutor', title: tutor_title, moves: moves }
   end
