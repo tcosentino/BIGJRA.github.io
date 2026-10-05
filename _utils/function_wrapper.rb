@@ -54,30 +54,97 @@ class FunctionWrapper
       'move' => 'generate_move_markdown',
       'raid' => 'generate_raid_den_markdown'
     }
+
+    # Data builders for each shortname. Each returns a block Hash (or an Array of
+    # them) that render_block turns back into the HTML the generate_* methods return.
+    @blockBuilders = {
+      'img' => 'build_image_block',
+      'enc' => 'build_encounter_block',
+      'shop' => 'build_shop_block',
+      'cshop' => 'build_cshop_block',
+      'battle' => 'build_trainer_block',
+      'btsinglesboss' => 'build_battle_tower_singles_bosses_blocks',
+      'btdoublesboss' => 'build_battle_tower_doubles_bosses_blocks',
+      'ttbattles' => 'build_theme_teams_blocks',
+      'dbattle' => 'build_double_block',
+      'mine' => 'build_mining_block',
+      'wildheld' => 'build_wild_held_block',
+      'tutor' => 'build_tutor_block',
+      'partner' => 'build_partner_block',
+      'newself' => 'build_newself_block',
+      'pickup' => 'build_pickup_block',
+      'boss' => 'build_boss_block',
+      'move' => 'build_move_block',
+      'raid' => 'build_raid_den_block'
+    }
   end
 
+  attr_reader :game, :itemHash, :moveHash, :abilityHash, :pokemonHash, :typeHash
+
   def evaluate_function_from_string(s)
+    evaluate_blocks_from_string(s)[:html]
+  end
+
+  # Evaluates a line beginning with ! and returns { html:, blocks: } where blocks
+  # is the structured data the html was rendered from. Results are cached per call.
+  def evaluate_blocks_from_string(s)
     s = s.strip[1..-2]
     func_shortname, args = s.split('(', 2)
     raise "#{func_shortname} not found in list of shortnames." unless @shortNames[func_shortname]
       
-    func = @shortNames[func_shortname]
+    func = @blockBuilders[func_shortname]
     run_str = "#{func}(#{args})"
     # puts run_str
     if @cache.include?(run_str)
       return @cache[run_str]
     end
-    res = eval(run_str) + "\n" # evaluates function, preserves its newline
+    blocks = eval(run_str) # evaluates function
+    blocks = [blocks] unless blocks.is_a?(Array)
+    blocks.each { |block| block[:macro] = func_shortname }
+    html = blocks.map { |block| render_block(block) }.join("\n\n") + "\n" # preserves its newline
+    res = { html: html, blocks: blocks }
     @cache[run_str] = res
     return res
   end
 
+  def render_block(block)
+    case block[:type]
+    when 'image' then render_image_html(block)
+    when 'encounters' then @encGetter.render_encounter_html(block)
+    when 'shop' then @shopGetter.render_shop_html(block)
+    when 'battle' then @trainerGetter.render_trainer_html(block)
+    when 'tutor' then render_tutor_html(block)
+    when 'mining' then render_mining_html(block)
+    when 'wildHeld' then render_wild_held_html(block)
+    when 'pickup' then render_pickup_html(block)
+    when 'html' then block[:html]
+    else raise "Unknown block type #{block[:type]}"
+    end
+  end
+
   def generate_image_markdown(filename)
-    "<img class=\"tabImage\" src=\"/assets/images/#{@game}/#{filename}\"/>"
+    render_block(build_image_block(filename))
+  end
+
+  def build_image_block(filename)
+    { type: 'image', file: filename, src: "/assets/images/#{@game}/#{filename}" }
+  end
+
+  def render_image_html(block)
+    "<img class=\"tabImage\" src=\"#{block[:src]}\"/>"
   end
 
   def generate_mining_markdown
+    render_block(build_mining_block)
+  end
+
+  def build_mining_block
     mining_hash = load_mining_hash(@game, @scriptsDir)
+    rows = mining_hash.map { |prob, item_list| { items: item_list, probability: prob } }
+    { type: 'mining', title: 'Mining Probabilities', rows: rows }
+  end
+
+  def render_mining_html(block)
     # Creates nokogiri HTML
     doc = Nokogiri::HTML::Document.new
     div = doc.create_element('div', class: 'mining_table')
@@ -94,12 +161,13 @@ class FunctionWrapper
     thead.add_child(table_header)
 
     bold = doc.create_element('strong')
-    bold.content = 'Mining Probabilities'
+    bold.content = block[:title]
     table_header.add_child(bold)
     table_header['class'] = 'table-header'
     table_header['style'] = 'text-align: center;'
 
-    mining_hash.each do |prob, item_list|
+    block[:rows].each do |row|
+      prob, item_list = row[:probability], row[:items]
       content_row = doc.create_element('tr')
       table.add_child(content_row)
 
@@ -120,6 +188,10 @@ class FunctionWrapper
   end
 
   def generate_wild_held_markdown
+    render_block(build_wild_held_block)
+  end
+
+  def build_wild_held_block
     # Create the main hash with default value as a proc
     lookup_hash = Hash.new { |hash, key| hash[key] = { 'common' => [], 'uncommon' => [], 'rare' => [] } }
 
@@ -134,6 +206,41 @@ class FunctionWrapper
       end
     end
 
+    rows = []
+    # Sorts items by order in item hash
+
+    lookup_hash.map do |item, mon_hash|
+      [item, mon_hash]
+    end.sort_by { |a, _| @itemHash.keys.index(a) }.each do |item, mon_hash|
+      next unless mon_hash
+
+      chances = []
+      mon_hash.each do |rarity, pokemon_list|
+        next if pokemon_list.empty?
+
+        # Transform each Pokemon entry into the desired format
+        pokemon_entries = pokemon_list.map do |pokemon, form|
+          form_1_key = @pokemonHash[pokemon].keys.find_all { |key| key.is_a?(String) }[0]
+          form_1_data = @pokemonHash[pokemon][form_1_key]
+          pokemon_name = "#{@pokemonHash[pokemon][form_1_key][:name]}"
+          if pokemon_name == 'Minior'
+            pokemon_name.to_s
+          elsif form != 'Normal Form' && form != form_1_key
+            "#{pokemon_name} (#{form.sub(' Form', '')})"
+          else
+            pokemon_name.to_s
+          end
+        end.zip(pokemon_list).map { |name, (species, form)| { species: species, form: form, displayName: name } }
+
+        chances.push({ rarity: rarity, percent: { 'common' => 50, 'uncommon' => 5, 'rare' => 1 }[rarity], pokemon: pokemon_entries })
+      end
+      rows.push({ item: item, chances: chances })
+    end
+
+    { type: 'wildHeld', title: 'Wild Pokemon Held Item Chances', rows: rows }
+  end
+
+  def render_wild_held_html(block)
     # Creates nokogiri HTML
     doc = Nokogiri::HTML::Document.new
     div = doc.create_element('div', class: 'mining_table')
@@ -150,40 +257,19 @@ class FunctionWrapper
     thead.add_child(table_header)
 
     bold = doc.create_element('strong')
-    bold.content = 'Wild Pokemon Held Item Chances'
+    bold.content = block[:title]
     table_header.add_child(bold)
     table_header['class'] = 'table-header'
     table_header['style'] = 'text-align: center;'
 
-    
-    # Sorts items by order in item hash
-
-    lookup_hash.map do |item, mon_hash|
-      [item, mon_hash]
-    end.sort_by { |a, _| @itemHash.keys.index(a) }.each do |item, mon_hash|
+    block[:rows].each do |row|
+      item = row[:item]
       result = ''
-      next unless mon_hash
-
-      mon_hash.each do |rarity, pokemon_list|
-        next if pokemon_list.empty?
-
-        # Transform each Pokemon entry into the desired format
-        pokemon_string = pokemon_list.map do |pokemon, form|
-          form_1_key = @pokemonHash[pokemon].keys.find_all { |key| key.is_a?(String) }[0]
-          form_1_data = @pokemonHash[pokemon][form_1_key]
-          pokemon_name = "#{@pokemonHash[pokemon][form_1_key][:name]}"
-          if pokemon_name == 'Minior'
-            pokemon_name.to_s
-          elsif form != 'Normal Form' && form != form_1_key
-            "#{pokemon_name} (#{form.sub(' Form', '')})"
-          else
-            pokemon_name.to_s
-          end
-        end.uniq.join(', ')
+      row[:chances].each do |chance|
+        pokemon_string = chance[:pokemon].map { |mon| mon[:displayName] }.uniq.join(', ')
 
         # Concatenate the rarity and Pokemon string
-        result << "- #{rarity.capitalize} (#{{ 'common' => 50, 'uncommon' => 5,
-                                               'rare' => 1 }[rarity]}%): #{pokemon_string}\n"
+        result << "- #{chance[:rarity].capitalize} (#{chance[:percent]}%): #{pokemon_string}\n"
       end
       result = result.chomp
 
@@ -206,8 +292,21 @@ class FunctionWrapper
   end
 
   def generate_pickup_markdown
+    render_block(build_pickup_block)
+  end
+
+  def build_pickup_block
     pickup_data = load_pickup_data(@game, @scriptsDir)
-  
+
+    # Sort entries by the order in item hash
+    sorted_pickup_data = pickup_data.sort_by { |item, _| @itemHash.keys.index(item) }
+    rows = sorted_pickup_data.map do |item, odds_hash|
+      { item: item, odds: odds_hash.map { |odds, range| { percent: odds, minLevel: range[0], maxLevel: range[1] } } }
+    end
+    { type: 'pickup', title: 'Pickup Odds', rows: rows }
+  end
+
+  def render_pickup_html(block)
     doc = Nokogiri::HTML::Document.new
     div = doc.create_element('div', class: 'pickup_table')
     doc.add_child(div)
@@ -224,7 +323,7 @@ class FunctionWrapper
   
     # Single header for Pickup Odds
     table_header = doc.create_element('th', colspan: 2)
-    table_header.add_child(doc.create_element('strong', 'Pickup Odds'))
+    table_header.add_child(doc.create_element('strong', block[:title]))
     table_header['class'] = 'table-header'
     table_header['style'] = 'text-align: center;'
     header_row.add_child(table_header)
@@ -232,11 +331,9 @@ class FunctionWrapper
     tbody = doc.create_element('tbody')
     table.add_child(tbody)
   
-    # Sort entries by the order in item hash
-    sorted_pickup_data = pickup_data.sort_by { |item, _| @itemHash.keys.index(item) }
-  
     # Iterate over each item in the sorted pickup data
-    sorted_pickup_data.each do |item, odds_hash|
+    block[:rows].each do |row|
+      item = row[:item]
       content_row = doc.create_element('tr')
       tbody.add_child(content_row)
   
@@ -246,8 +343,8 @@ class FunctionWrapper
       content_row.add_child(td_item)
   
       # Column 2: Odds and Level Ranges
-      odds_string = odds_hash.map do |odds, range|
-        "- #{odds}%: Lv. #{range[0]}-#{range[1]}"
+      odds_string = row[:odds].map do |odds|
+        "- #{odds[:percent]}%: Lv. #{odds[:minLevel]}-#{odds[:maxLevel]}"
       end.join("\n")
   
       td_odds = doc.create_element('td')
@@ -263,12 +360,28 @@ class FunctionWrapper
     @encGetter.get_encounter_md(map_id, include_list, rods, custom_map_name)
   end
 
+  def build_encounter_block(map_id, include_list = nil, rods = nil, custom_map_name = nil)
+    @encGetter.build_encounter_data(map_id, include_list, rods, custom_map_name)
+  end
+
   def generate_shop_markdown(shop_title, shop_items)
     @shopGetter.generate_shop_markdown(shop_title, shop_items)
   end
 
+  def build_shop_block(shop_title, shop_items)
+    @shopGetter.build_shop_data(shop_title, shop_items)
+  end
+
   def generate_cshop_markdown(shop_symbol, shop_name, badges = 0)
     @shopGetter.generate_cshop_markdown(shop_symbol, shop_name, badges: badges)
+  end
+
+  def build_cshop_block(shop_symbol, shop_name, badges = 0)
+    @shopGetter.build_cshop_data(shop_symbol, shop_name, badges: badges)
+  end
+
+  def build_move_block(move_name)
+    { type: 'html', move: move_name.to_sym, html: generate_move_markdown(move_name) }
   end
 
   def generate_move_markdown(move_name)
@@ -283,52 +396,86 @@ class FunctionWrapper
     @trainerGetter.generate_trainer_markdown(trainer_id, field)
   end
 
+  def build_trainer_block(trainer_id, field = nil)
+    @trainerGetter.build_trainer_data(trainer_id, field)
+  end
+
   def generate_boss_markdown(boss_name, field = nil)
     @trainerGetter.generate_trainer_markdown(boss_name.to_sym, field)
   end
 
+  def build_boss_block(boss_name, field = nil)
+    @trainerGetter.build_trainer_data(boss_name.to_sym, field)
+  end
+
   def generate_battle_tower_singles_bosses_markdown
+    build_battle_tower_singles_bosses_blocks.map { |block| render_block(block) }.join("\n\n")
+  end
+
+  def build_battle_tower_singles_bosses_blocks
     return_array = []
     teams = { 'reborn' => REBORN_BT_SINGLES }[@game]
     teams.each do |team|
       field_name = FIELDS[team[3]]
-      return_array.push(generate_trainer_markdown([team[1], team[0], team[2]], field_name))
+      return_array.push(build_trainer_block([team[1], team[0], team[2]], field_name))
     end
-    return_array.join("\n\n")
+    return_array
   end
 
   def generate_battle_tower_doubles_bosses_markdown
+    build_battle_tower_doubles_bosses_blocks.map { |block| render_block(block) }.join("\n\n")
+  end
+
+  def build_battle_tower_doubles_bosses_blocks
     return_array = []
     teams = { 'reborn' => REBORN_BT_DOUBLES }[@game]
     teams.each do |team|
       field_name = FIELDS[team[3]]
-      return_array.push(generate_trainer_markdown([team[1], team[0], team[2]], field_name))
+      return_array.push(build_trainer_block([team[1], team[0], team[2]], field_name))
     end
-    return_array.join("\n\n")
+    return_array
   end
 
   def generate_theme_teams_markdown
+    build_theme_teams_blocks.map { |block| render_block(block) }.join("\n\n")
+  end
+
+  def build_theme_teams_blocks
     return_array = []
     teams = { 'reborn' => REBORN_THEME_TEAMS }[@game]
     teams.each do |team|
       fight, data = @trainerHash.find { |fight, _data| fight[0] == team[:trainer] && fight[2] == team[:teamnumber] }
       field_name = FIELDS[team[:field]]
-      return_array.push(generate_bp_trainer_markdown(fight, field_name, team_name = "(#{team[:name]})"))
+      block = build_bp_trainer_block(fight, field_name, team_name = "(#{team[:name]})")
+      block[:teamName] = team[:name]
+      return_array.push(block)
     end
 
-    return_array.join("\n\n")
+    return_array
   end
 
   def generate_bp_trainer_markdown(trainer_id, field_text = 'Random Field', team_name = '')
-    @trainerGetter.generate_trainer_markdown(trainer_id, field = field_text, nil, 0, name_ext = team_name)
+    render_block(build_bp_trainer_block(trainer_id, field_text, team_name))
+  end
+
+  def build_bp_trainer_block(trainer_id, field_text = 'Random Field', team_name = '')
+    @trainerGetter.build_trainer_data(trainer_id, field = field_text, nil, 0, name_ext = team_name)
   end
 
   def generate_double_markdown(trainer_id1, trainer_id2, field = nil)
     @trainerGetter.generate_trainer_markdown(trainer_id1, field, trainer_id2)
   end
 
+  def build_double_block(trainer_id1, trainer_id2, field = nil)
+    @trainerGetter.build_trainer_data(trainer_id1, field, trainer_id2)
+  end
+
   def generate_partner_markdown(trainer_id)
     @trainerGetter.generate_trainer_markdown(trainer_id, nil, nil, 1)
+  end
+
+  def build_partner_block(trainer_id)
+    @trainerGetter.build_trainer_data(trainer_id, nil, nil, 1)
   end
 
   def generate_newself_markdown(trainer_id, new_title=nil)
@@ -336,7 +483,22 @@ class FunctionWrapper
     return @trainerGetter.generate_trainer_markdown(trainer_id, nil, nil, 2)
   end
 
+  def build_newself_block(trainer_id, new_title=nil)
+    return @trainerGetter.build_trainer_data(trainer_id, nil, nil, 2, new_title) if new_title
+    return @trainerGetter.build_trainer_data(trainer_id, nil, nil, 2)
+  end
+
   def generate_tutor_markdown(tutor_title, moves)
+    render_block(build_tutor_block(tutor_title, moves))
+  end
+
+  def build_tutor_block(tutor_title, moves)
+    @moveNameLookup ||= @moveHash.each_with_object({}) { |(sym, data), lookup| lookup[data[:name]] ||= sym }
+    moves = moves.map { |move, price| { move: @moveNameLookup[move], name: move, price: price } }
+    { type: 'tutor', title: tutor_title, moves: moves }
+  end
+
+  def render_tutor_html(block)
     # Creates nokogiri HTML
     doc = Nokogiri::HTML::Document.new
     div = doc.create_element('div', class: 'tutor_table')
@@ -353,12 +515,13 @@ class FunctionWrapper
     thead.add_child(table_header)
 
     bold = doc.create_element('strong')
-    bold.content = tutor_title
+    bold.content = block[:title]
     table_header.add_child(bold)
     table_header['class'] = 'table-header'
     table_header['style'] = 'text-align: center;'
 
-    moves.each do |move, price|
+    block[:moves].each do |entry|
+      move, price = entry[:name], entry[:price]
       content_row = doc.create_element('tr')
       table.add_child(content_row)
 
@@ -376,6 +539,10 @@ class FunctionWrapper
 
     html_output = doc.to_html
     html_output.split("\n")[1..].join("\n")
+  end
+
+  def build_raid_den_block(den_num, num_badges)
+    { type: 'html', html: generate_raid_den_markdown(den_num, num_badges) }
   end
 
   def generate_raid_den_markdown(den_num, num_badges)

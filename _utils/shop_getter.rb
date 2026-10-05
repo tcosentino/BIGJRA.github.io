@@ -91,6 +91,10 @@ class ShopGetter
   end
 
   def generate_cshop_markdown(shop_key, shop_title, badges: 0)
+    render_shop_html(build_cshop_data(shop_key, shop_title, badges: badges))
+  end
+
+  def build_cshop_data(shop_key, shop_title, badges: 0)
     shop = @shopHash.fetch(shop_key) do
       raise "Unknown shop #{shop_key.inspect}"
     end
@@ -117,7 +121,7 @@ class ShopGetter
         ]
       end
 
-    generate_shop_markdown(shop_title, shop_items)
+    build_shop_data(shop_title, shop_items)
   end
 
   private
