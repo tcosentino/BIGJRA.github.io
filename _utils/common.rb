@@ -434,8 +434,9 @@ module PBStats
   ACCURACY = "Acc"
 end
 
+# WT_RAW_DIR lets a wrapper build from a patched copy of src/_raw
 def get_game_contents_dir(game)
-  File.join(ROOT_DIR, 'src', '_raw', game)
+  File.join(ENV['WT_RAW_DIR'] || File.join(ROOT_DIR, 'src', '_raw'), game)
 end
 
 def load_chapter_md(game, chapter_type, chapter_num)
