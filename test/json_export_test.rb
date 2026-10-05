@@ -170,6 +170,13 @@ class JsonExportTest < Minitest::Test
     encountered.each { |sym| refute_empty pokedex[sym]['locations'], "locations for #{sym}" }
     section_ids = index['chapters'].flat_map { |ch| [ch['id']] + ch['sections'].map { |s| s['id'] } }
     pokedex.each_value { |s| s['locations'].each { |l| assert_includes section_ids, l['sectionId'] } }
+
+    # Bolded species names in prose mark obtainable Pokemon
+    pokedex.each_value { |s| assert_kind_of Array, s['mentions'] }
+    assert_equal 'Neo Obsidia Ward', pokedex['RALTS']['mentions'].first['sectionTitle']
+    assert_equal 'Grand Hall', pokedex['CHARMANDER']['mentions'].first['sectionTitle']
+    pokedex.each_value { |s| s['mentions'].each { |m| assert_includes section_ids, m['sectionId'] } }
+    assert_operator pokedex.values.count { |s| !s['mentions'].empty? }, :>=, 200
   end
 
   def test_learnsets_cover_all_species_with_move_data

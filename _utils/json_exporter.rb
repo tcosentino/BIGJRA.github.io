@@ -223,6 +223,9 @@ class JsonExporter
       species[sym] = entry
     end
 
+    mentions = build_mentions(species)
+    species.each { |sym, entry| entry[:mentions] = mentions[sym] }
+
     fw = @funcWrapper
     abilities = {}
     names = {}
@@ -241,6 +244,32 @@ class JsonExporter
       end
     end
     export_value({ species: species, abilities: abilities, names: names })
+  end
+
+  # Guide sections whose prose bolds a species name (gifts, eggs, purchases, static encounters).
+  def build_mentions(species)
+    by_name = {}
+    species.each { |sym, entry| by_name[entry[:name].to_s.downcase] ||= sym }
+    mentions = Hash.new { |h, k| h[k] = [] }
+    @chapters.each do |ch|
+      ch[:sections].each do |sec|
+        sec_id = sec[:id] || ch[:id]
+        sec_title = sec[:title] || 'Introduction'
+        sec[:blocks].each do |block|
+          next unless block[:type] == 'prose'
+          block[:markdown].to_s.split("\n").each do |line|
+            next if line.include?('|')
+            line.scan(/\*\*([^*]+)\*\*/) do |(text)|
+              sym = by_name[text.strip.downcase]
+              next unless sym
+              next if mentions[sym].any? { |m| m[:sectionId] == sec_id }
+              mentions[sym] << { chapterId: ch[:id], sectionId: sec_id, sectionTitle: sec_title }
+            end
+          end
+        end
+      end
+    end
+    species.each_key.to_h { |sym| [sym, mentions[sym]] }
   end
 
   # Per-form learnsets (no pre-evolution merging) plus full data for every move they reference
