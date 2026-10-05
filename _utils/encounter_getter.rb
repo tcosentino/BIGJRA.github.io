@@ -13,7 +13,21 @@ class EncounterGetter
     @encStore = Set[]
   end
 
+  # Encounter table key => [method, time of day] used in the structured data
+  ENC_METHODS = {
+    LandMorning: ['Grass', 'Morning'], LandDay: ['Grass', 'Day'], LandNight: ['Grass', 'Night'],
+    Cave: ['Cave', nil], Water: ['Surfing', nil], Headbutt: ['Headbutt', nil], RockSmash: ['Rock Smash', nil],
+    OldRod: ['Fishing-Old', nil], GoodRod: ['Fishing-Good', nil], SuperRod: ['Fishing-Super', nil]
+  }
+
   def get_encounter_md(map_id, include_list = nil, rods = nil, custom_map_name = nil)
+    render_encounter_html(build_encounter_data(map_id, include_list, rods, custom_map_name))
+  end
+
+  # Assembles encounter data for a map into a plain Hash (see render_encounter_html).
+  # :methods holds one entry per encounter table; :_groups is the render-only
+  # grouping (Grass morning/day/night, fishing rods) used by the HTML tables.
+  def build_encounter_data(map_id, include_list = nil, rods = nil, custom_map_name = nil)
     include_list ||= []
     rods ||= %w[Old Good Super]
 
@@ -35,10 +49,14 @@ class EncounterGetter
       "Fishing": %i[OldRod GoodRod SuperRod]
     }
 
-    # Creates nokogiri HTML
-    doc = Nokogiri::HTML::Document.new
-    div = doc.create_element('div', class: 'encounter_section')
-    doc.add_child(div)
+    result = {
+      type: 'encounters',
+      mapId: map_id,
+      name: custom_map_name || map_name,
+      mapName: map_name,
+      methods: [],
+      _groups: []
+    }
 
     found_group = false
 
@@ -59,9 +77,8 @@ class EncounterGetter
 
       # Creates a hash where mons will note every possible level, and rates per encounter type
       mons = Hash.new { |hash, key| hash[key] = { 'levels' => Set.new }.merge(types.map { |type| [type, 0] }.to_h) }
-
-      table = doc.create_element('table')
-      div.add_child(table)
+      # Per encounter table levels, for the structured data
+      type_levels = Hash.new { |hash, key| hash[key] = Hash.new { |h, k| h[k] = Set.new } }
 
       types.each do |type|
         next unless data[type]
@@ -83,6 +100,7 @@ class EncounterGetter
 
             mons[mon][type] += odds
             (min_value..max_value).each { |num| mons[mon]['levels'].add(num) }
+            (min_value..max_value).each { |num| type_levels[type][mon].add(num) }
           end
         end
       end
@@ -90,6 +108,118 @@ class EncounterGetter
       mons.dup.each do |pokemon, _data|
         mons[pokemon]['levels'] = set_to_range_string(mons[pokemon]['levels'])
       end
+
+      group_data = { group: group, types: types, rows: [] }
+      result[:_groups].push(group_data)
+      method_rows = types.map { |type| [type, []] }.to_h
+
+      mons.sort_by { |mon, _data| @pokemonHash.keys.find_index(mon.is_a?(Array) ? mon[0] : mon) }.each do |mon, mon_data|
+        mon_key = mon
+
+        # Newer scripts use [:mon, some kind of form object]. Find the base form first.
+        form_representation = nil
+        if mon.is_a?(Array)
+          mon, form_representation = mon
+        end
+        
+        base_form = @pokemonHash[mon].keys.find_all { |key| key.is_a?(String) }[0]
+        pokemon_name_formatted = @pokemonHash[mon][base_form][:name]
+
+        if !(form_representation.nil?)
+          if form_representation.is_a?(Integer)
+            form_key = @pokemonHash[mon].keys.find_all { |key| key.is_a?(String) }[form_representation]
+            pokemon_name_formatted += " (#{form_key})".sub(' Form', '')
+          elsif form_representation.is_a?(Range)
+            form_keys = form_representation.map do |form|
+              @pokemonHash[mon].keys.find_all { |key| key.is_a?(String) }[form]
+            end
+
+            # Tauros override to just be any of the 3 forms
+            if mon == :TAUROS && form_keys.length == 3
+              pokemon_name_formatted += " (Paldean)"
+            end
+
+            # I have to be picky and choosy here. Unown for example shouldn't count but Basculin should.
+            skip_list = [:TAUROS, :UNOWN, :PUMPKABOO, :MINIOR, :TATSUGIRI, :SQUAWKABILLY]
+            if !(skip_list.include?(mon))
+              form_keys.map! { |form_key| form_key.sub(' Form', '') }
+              form_keys.map! { |form_key| form_key.sub('-Striped', '') } # basculin cleanup
+              pokemon_name_formatted += " (#{form_keys.join('/')})"
+            end
+          end
+        end
+
+        # If there is no form present then we fall back to the old method
+        if form_representation.nil? && @encMapWrapper.get_enc_maps(mon) and @encMapWrapper.get_enc_maps(mon)[map_id]
+          form = @encMapWrapper.get_enc_maps(mon)[map_id]
+          form_representation = form
+          form_key = @pokemonHash[mon].keys.find_all { |key| key.is_a?(String) }[form]
+          
+          pokemon_name_formatted += " (#{form_key})".sub(' Form', '')
+        end
+
+        # Bold if not detected in hash so far
+        first_seen = !@encStore.include?(pokemon_name_formatted)
+        @encStore.add(pokemon_name_formatted)
+
+        form_value = form_representation.is_a?(Range) ? form_representation.to_a : form_representation
+        group_data[:rows].push({
+          species: mon,
+          form: form_value,
+          displayName: pokemon_name_formatted,
+          firstSeen: first_seen,
+          levels: mon_data['levels'],
+          rates: types.map { |encounter_type| mon_data[encounter_type] }
+        })
+
+        types.each do |encounter_type|
+          next unless type_levels[encounter_type].key?(mon_key)
+          levels = type_levels[encounter_type][mon_key]
+          method_rows[encounter_type].push({
+            species: mon,
+            form: form_value,
+            displayName: pokemon_name_formatted,
+            firstSeen: first_seen,
+            minLevel: levels.min,
+            maxLevel: levels.max,
+            levels: set_to_range_string(levels),
+            rate: mon_data[encounter_type].round(2)
+          })
+        end
+      end
+
+      # Maps with a single :Land table (copied to all times of day above) get one untimed method
+      land_only = data[:Land] && types.include?(:LandDay) && types.all? { |type| data[type].equal?(data[:Land]) }
+      types.each do |type|
+        next unless data[type]
+        method, time = ENC_METHODS[type]
+        if land_only
+          next unless type == :LandDay
+          time = nil
+        end
+        result[:methods].push({ method: method, time: time, rows: method_rows[type] })
+      end
+    end
+
+    throw "No encounter tables found for #{map_id}, #{include_list}" unless found_group
+
+    result
+  end
+
+  # Renders encounter data from build_encounter_data as the walkthrough's HTML tables.
+  def render_encounter_html(result)
+    # Creates nokogiri HTML
+    doc = Nokogiri::HTML::Document.new
+    div = doc.create_element('div', class: 'encounter_section')
+    doc.add_child(div)
+
+    result[:_groups].each do |group_data|
+      group = group_data[:group]
+      types = group_data[:types]
+      num_cols = types.length + 2
+
+      table = doc.create_element('table')
+      div.add_child(table)
 
       # Creates the header for the table
       thead = doc.create_element('thead')
@@ -99,7 +229,7 @@ class EncounterGetter
 
       th = doc.create_element('th', colspan: num_cols)
       bold = doc.create_element('strong')
-      bold.content = "#{custom_map_name || map_name} Encounters: #{group}"
+      bold.content = "#{result[:name]} Encounters: #{group}"
       th.add_child(bold)
       th['class'] = 'table-header'
       th['style'] = 'text-align: center;'
@@ -149,79 +279,35 @@ class EncounterGetter
 
       table.add_child(thead)
 
-      mons.sort_by { |mon, _data| @pokemonHash.keys.find_index(mon.is_a?(Array) ? mon[0] : mon) }.each do |mon, mon_data|
-        
+      group_data[:rows].each do |row|
         # Create a table row element
         tr = doc.create_element('tr')
 
         # Add Pokemon's name to the first column
         td_name = doc.create_element('td', style: 'text-align: center')
 
-        # Newer scripts use [:mon, some kind of form object]. Find the base form first.
-        form_representation = nil
-        if mon.is_a?(Array)
-          mon, form_representation = mon
-        end
-        
-        base_form = @pokemonHash[mon].keys.find_all { |key| key.is_a?(String) }[0]
-        pokemon_name_formatted = @pokemonHash[mon][base_form][:name]
-
-        if !(form_representation.nil?)
-          if form_representation.is_a?(Integer)
-            form_key = @pokemonHash[mon].keys.find_all { |key| key.is_a?(String) }[form_representation]
-            pokemon_name_formatted += " (#{form_key})".sub(' Form', '')
-          elsif form_representation.is_a?(Range)
-            form_keys = form_representation.map do |form|
-              @pokemonHash[mon].keys.find_all { |key| key.is_a?(String) }[form]
-            end
-
-            # Tauros override to just be any of the 3 forms
-            if mon == :TAUROS && form_keys.length == 3
-              pokemon_name_formatted += " (Paldean)"
-            end
-
-            # I have to be picky and choosy here. Unown for example shouldn't count but Basculin should.
-            skip_list = [:TAUROS, :UNOWN, :PUMPKABOO, :MINIOR, :TATSUGIRI, :SQUAWKABILLY]
-            if !(skip_list.include?(mon))
-              form_keys.map! { |form_key| form_key.sub(' Form', '') }
-              form_keys.map! { |form_key| form_key.sub('-Striped', '') } # basculin cleanup
-              pokemon_name_formatted += " (#{form_keys.join('/')})"
-            end
-          end
-        end
-
-        # If there is no form present then we fall back to the old method
-        if form_representation.nil? && @encMapWrapper.get_enc_maps(mon) and @encMapWrapper.get_enc_maps(mon)[map_id]
-          form = @encMapWrapper.get_enc_maps(mon)[map_id]
-          form_key = @pokemonHash[mon].keys.find_all { |key| key.is_a?(String) }[form]
-          
-          pokemon_name_formatted += " (#{form_key})".sub(' Form', '')
-        end
-
         # Bold if not detected in hash so far
-        if @encStore.include?(pokemon_name_formatted)
-          td_name.content = pokemon_name_formatted
-        else
+        if row[:firstSeen]
           bold = doc.create_element('strong')
-          bold.content = pokemon_name_formatted
+          bold.content = row[:displayName]
           td_name.add_child(bold)
-          @encStore.add(pokemon_name_formatted)
+        else
+          td_name.content = row[:displayName]
         end
         tr.add_child(td_name)
 
         # Add levels to the second column
         td_levels = doc.create_element('td', style: 'text-align: center')
-        td_levels.content = mon_data['levels']
+        td_levels.content = row[:levels]
         tr.add_child(td_levels)
 
         # Add encounter types to additional columns
-        types.each do |encounter_type|
-          # [:LandMorning, :LandDay, :LandNight].each do |encounter_type|
+        row[:rates].each do |rate|
           td_encounter_type = doc.create_element('td', style: 'text-align: center')
-          td_encounter_type.content = if mon_data[encounter_type] == 0
+          td_encounter_type.content = if rate == 0
                                         '--'
                                       else
-                                        mon_data[encounter_type].round(2).to_s + '%'
+                                        rate.round(2).to_s + '%'
                                       end
           tr.add_child(td_encounter_type)
         end
@@ -229,8 +315,6 @@ class EncounterGetter
         table.add_child(tr)
       end
     end
-
-    throw "No encounter tables found for #{map_id}, #{include_list}" unless found_group
 
     html_output = doc.to_html
     html_output.split("\n")[1..].join("\n")
