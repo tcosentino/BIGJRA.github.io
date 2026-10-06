@@ -17,6 +17,7 @@ class TrainerGetter
     @pokemonHash = pokemon_hash ||= load_pokemon_hash(@game, @scriptsDir)
     @typeHash = type_hash ||= load_type_hash(@game, @scriptsDir)
     @trainerStore = Set[]
+    @doubleBattles = load_double_battles(game)
     @stats = ["HP", "Atk", "Def", "SpA", "Spd", "Spe"]
   end
 
@@ -102,7 +103,8 @@ class TrainerGetter
     data = {
       type: 'battle',
       heading: heading,
-      double: !second_trainer_id.nil?,
+      # Two-trainer !dbattle, or one trainer the game's map events always fight as a double
+      double: !second_trainer_id.nil? || (type_mod == 0 && @doubleBattles.include?(trainer_id)),
       partner: type_mod == 1,
       pov: type_mod == 2,
       boss: fight_is_boss,

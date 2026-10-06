@@ -431,7 +431,9 @@ class FunctionWrapper
     teams = { 'reborn' => REBORN_BT_DOUBLES }[@game]
     teams.each do |team|
       field_name = FIELDS[team[3]]
-      return_array.push(build_trainer_block([team[1], team[0], team[2]], field_name))
+      block = build_trainer_block([team[1], team[0], team[2]], field_name)
+      block[:double] = true
+      return_array.push(block)
     end
     return_array
   end
@@ -448,6 +450,7 @@ class FunctionWrapper
       field_name = FIELDS[team[:field]]
       block = build_bp_trainer_block(fight, field_name, team_name = "(#{team[:name]})")
       block[:teamName] = team[:name]
+      block[:double] = team[:doubles]
       return_array.push(block)
     end
 

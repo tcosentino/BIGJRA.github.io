@@ -2,6 +2,7 @@ require 'json'
 require 'yaml'
 require 'nokogiri'
 require 'date'
+require 'set'
 
 UTILS_DIR = File.dirname(File.expand_path(__FILE__))
 ROOT_DIR = File.dirname(UTILS_DIR)
@@ -495,6 +496,19 @@ def load_trainer_hash(game, scripts_dir)
     ret[trainer_hash[:teamid]] = trainer_hash
   end
   ret
+end
+
+# Committed lookup of single-trainer double battles, written by _utils/scan_double_battles.rb.
+def double_battles_path(game)
+  File.join(UTILS_DIR, 'double_battles', "#{game}.json")
+end
+
+# Set of team ids [name, :TYPE, party] the game fights as a double battle against one trainer.
+# Empty when no lookup exists for the game.
+def load_double_battles(game)
+  path = double_battles_path(game)
+  return Set[] unless File.exist?(path)
+  JSON.parse(File.read(path, encoding: 'UTF-8'))['doubles'].to_set { |d| [d['name'], d['type'].to_sym, d['party']] }
 end
 
 def load_boss_hash(game, scripts_dir)

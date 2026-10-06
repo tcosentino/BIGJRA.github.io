@@ -1,4 +1,5 @@
 require_relative 'test_helper'
+require_relative '../_utils/common'
 
 class JsonExportTest < Minitest::Test
   RAW_DIR = File.join(TestPaths::REPO_DIR, 'src', '_raw', 'reborn')
@@ -66,7 +67,9 @@ class JsonExportTest < Minitest::Test
     assert_operator by_macro['ttbattles'], :>, 0
     assert_operator by_macro['btsinglesboss'], :>, 0
     assert_operator by_macro['btdoublesboss'], :>, 0
-    assert_equal raw['dbattle'], all_blocks.count { |b| b['type'] == 'battle' && b['double'] }
+    assert all_blocks.select { |b| b['macro'] == 'dbattle' }.all? { |b| b['double'] }, 'every !dbattle is a double'
+    assert all_blocks.select { |b| b['macro'] == 'btdoublesboss' }.all? { |b| b['double'] }, 'every Battle Tower doubles boss is a double'
+    refute all_blocks.any? { |b| b['type'] == 'battle' && b['partner'] && b['double'] }, 'partner blocks are never doubles'
     assert_equal raw['partner'], all_blocks.count { |b| b['type'] == 'battle' && b['partner'] }
   end
 
@@ -128,6 +131,35 @@ class JsonExportTest < Minitest::Test
     assert_equal 13, mon['level']
     assert_equal 'IRONBARBS', mon['ability']
     assert_equal %w[THUNDERSHOCK DEFENSECURL ROLLOUT CHARGE], mon['moves']
+  end
+
+  # Single-trainer doubles come from _utils/double_battles/reborn.json (game map events)
+  def test_single_trainer_double_battles
+    battle = lambda do |section_id, team_id|
+      section = chapters.flat_map { |ch| ch['sections'] }.find { |s| s['id'] == section_id }
+      section['blocks'].find { |b| b['type'] == 'battle' && b['trainers'].map { |t| t['teamId'] } == [team_id] }
+    end
+    assert battle.('cinder-badge', ['Charlotte', 'CHARLOTTE', 0])['double'], 'Charlotte gym is a double'
+    assert battle.('victory-road', ['Troy', 'SPIRITM', 0])['double']
+    refute battle.('obsidia-ward', ['Franklin', 'StreetRat', 0])['double']
+    single_doubles = all_blocks.count { |b| b['macro'] == 'battle' && b['double'] }
+    assert_operator single_doubles, :>=, 40
+
+    lookup = load_double_battles('reborn')
+    all_blocks.select { |b| b['macro'] == 'battle' && !b['partner'] && !b['boss'] }.each do |b|
+      team = b['trainers'][0]['teamId']
+      assert_equal lookup.include?([team[0], team[1].to_sym, team[2]]), b['double'], "double flag for #{team}"
+    end
+  end
+
+  def test_theme_team_doubles_follow_team_table
+    teams = REBORN_THEME_TEAMS.to_h { |t| [[t[:trainer], t[:teamnumber]], t[:doubles]] }
+    blocks = all_blocks.select { |b| b['macro'] == 'ttbattles' }
+    refute_empty blocks
+    blocks.each do |b|
+      team = b['trainers'][0]['teamId']
+      assert_equal teams.fetch([team[0], team[2]]), b['double'], "theme team #{team}"
+    end
   end
 
   def test_dex_spot_checks
